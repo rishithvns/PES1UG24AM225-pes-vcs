@@ -8,10 +8,10 @@
 //
 // Example single entry (conceptual):
 //   "100644 hello.txt\0" followed by 32 raw bytes of SHA-256
-
 #include "tree.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include "index.h"
 #include <string.h>
 #include <dirent.h>
 #include <sys/stat.h>
@@ -125,13 +125,94 @@ int tree_serialize(const Tree *tree, void **data_out, size_t *len_out) {
 //   - strncmp         : compare prefixes to group files belonging to the same subdirectory
 //   - Recursion       : you will likely want to create a recursive helper function 
 //                       (e.g., `write_tree_level(entries, count, depth)`) to handle nested dirs.
-//   - tree_serialize  : convert your populated Tree struct into a binary buffer
-//   - object_write    : save that binary buffer to the store as OBJ_TREE
-//
+//   - tree_serialize  : convert your populated Tree struct into a b/   - object_write    : save that binary buffer to the store as OBJ_TREE
+
 // Returns 0 on success, -1 on error.
+int build_tree_level(IndexEntry *entries, int count, const char *prefix, ObjectID *out_id) {
+    Tree tree;
+    tree.count = 0;
+
+    for (int i = 0; i < count; i++) {
+        const char *path = entries[i].path;
+
+        // Skip if not matching prefix
+        if (prefix && strncmp(path, prefix, strlen(prefix)) != 0)
+            continue;
+
+        const char *remaining = prefix ? path + strlen(prefix) : path;
+
+        const char *slash = strchr(remaining, '/');
+
+        if (!slash) {
+            // file
+            TreeEntry *e = &tree.entries[tree.count++];
+            strcpy(e->name, remaining);
+            e->mode = entries[i].mode;
+            e->hash = entries[i].hash;
+        } else {
+            // directory
+            char dirname[256];
+            int len = slash - remaining;
+            strncpy(dirname, remaining, len);
+            dirname[len] = '\0';
+
+            // avoid duplicates
+            int exists = 0;
+            for (int j = 0; j < tree.count; j++) {
+                if (strcmp(tree.entries[j].name, dirname) == 0) {
+                    exists = 1;
+                    break;
+                }
+            }
+            if (exists) continue;
+
+            // collect sub entries
+            IndexEntry sub_entries[256];
+            int sub_count = 0;
+
+            for (int j = 0; j < count; j++) {
+                if (strncmp(entries[j].path, prefix ? prefix : "", prefix ? strlen(prefix) : 0) == 0) {
+                    const char *rem = prefix ? entries[j].path + strlen(prefix) : entries[j].path;
+                    if (strncmp(rem, dirname, strlen(dirname)) == 0 && rem[strlen(dirname)] == '/') {
+                        sub_entries[sub_count++] = entries[j];
+                    }
+                }
+            }
+
+            char new_prefix[512];
+            if (prefix)
+                sprintf(new_prefix, "%s%s/", prefix, dirname);
+            else
+                sprintf(new_prefix, "%s/", dirname);
+
+            ObjectID sub_id;
+            if (build_tree_level(sub_entries, sub_count, new_prefix, &sub_id) != 0)
+                return -1;
+
+            TreeEntry *e = &tree.entries[tree.count++];
+            strcpy(e->name, dirname);
+            e->mode = MODE_DIR;
+            e->hash = sub_id;
+        }
+    }
+
+    void *data;
+    size_t len;
+
+    if (tree_serialize(&tree, &data, &len) != 0)
+        return -1;
+
+    if (object_write(OBJ_TREE, data, len, out_id) != 0)
+        return -1;
+
+    free(data);
+    return 0;
+}
+
 int tree_from_index(ObjectID *id_out) {
-    // TODO: Implement recursive tree building
-    // (See Lab Appendix for logical steps)
-    (void)id_out;
-    return -1;
+    Index index;
+    if (index_load(&index) != 0)
+        return -1;
+
+    return build_tree_level(index.entries, index.count, NULL, id_out);
 }
