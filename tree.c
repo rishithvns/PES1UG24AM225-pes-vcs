@@ -11,6 +11,7 @@
 // Load index and prepare tree
 // Handle nested directory paths using strtok
 // Recursive tree writing using tree_write_recursive
+// Phase 2 complete: all tests passing
 #include "tree.h"
 #include <stdio.h>
 #include <stdlib.h>
