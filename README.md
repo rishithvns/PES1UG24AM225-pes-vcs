@@ -618,8 +618,9 @@ The following questions cover filesystem concepts beyond the implementation scop
 
 
 ## Phase 1
-
+---
 Screenshot 1A: 
+---
 ![Screenshot 1](ss1.png)
 
 
