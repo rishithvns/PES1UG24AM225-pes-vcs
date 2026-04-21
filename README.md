@@ -600,3 +600,163 @@ The following questions cover filesystem concepts beyond the implementation scop
 - **Git Internals** (Pro Git book): https://git-scm.com/book/en/v2/Git-Internals-Plumbing-and-Porcelain
 - **Git from the inside out**: https://codewords.recurse.com/issues/two/git-from-the-inside-out
 - **The Git Parable**: https://tom.preston-werner.com/2009/05/19/the-git-parable.html
+
+
+
+
+
+
+
+
+
+---
+# LAB REPORT
+
+## Name: RISHIT V N S
+---
+
+
+
+## Phase 1
+
+Screenshot 1A: 
+![Screenshot 1](ss1.png)
+
+
+Screenshot 1B: 
+![Screenshot 2](ss2.png)
+
+##PHASE 2
+Screenshot 2A: 
+![Screenshot 3](ss3.png)
+
+Screenshot 2B: 
+![Screenshot 4](ss4.png)
+
+##PHASE 3
+Screenshot 3A: 
+![Screenshot 5](ss5.png)
+
+Screenshot 3B
+![Screenshot 6](ss6.png)
+
+
+##PHASE 4
+Screenshot 4A: 
+![Screenshot 7](ss7.png)
+
+Screenshot 4B: 
+![Screenshot 8](ss8.png)
+
+Screenshot 4C: 
+![Screenshot 9](ss9.png)
+
+MAKE_TEST_INTEGRATION
+![Screenshot 10](ss10.png)
+
+
+
+
+# Phase 5 & 6: Analysis Answers
+
+## Q5.1
+A branch in PES is stored as a file in `.pes/refs/heads/` containing a commit hash.
+
+- Creating a branch (`pes branch <name>`):
+  - Create a new file `.pes/refs/heads/<name>`
+  - Write the current HEAD commit hash into it
+
+- Checkout (`pes checkout <branch>`):
+  - Update `.pes/HEAD` to:
+    ref: refs/heads/<branch>
+  - Read the commit hash from that branch file
+  - Load the corresponding tree object
+  - Update the working directory files to match that tree
+
+Working directory update:
+- Replace files with contents from the target commit’s tree
+- Remove files not present in target tree
+
+---
+
+## Q5.2
+The system compares:
+- Current working directory files  
+vs  
+- Index entries (stored metadata: hash, size, mtime)
+
+Steps:
+1. For each tracked file:
+   - Compare file’s current metadata (mtime, size)
+   - If different → recompute hash
+2. If hash differs from index → file is modified
+3. If modified file differs across branches → checkout is refused
+
+Reason:
+To prevent overwriting user’s uncommitted changes.
+
+---
+
+## Q5.3
+Detached HEAD means:
+- `.pes/HEAD` contains a commit hash directly, not a branch reference
+
+Effect:
+- New commits are created but not attached to any branch
+- They become “dangling” commits
+
+Recovery:
+- Create a branch pointing to that commit:
+  pes branch <name>
+- Or manually update `.pes/refs/heads/<name>` with that commit hash
+
+---
+
+## Q6.1
+Goal: Remove unreachable objects (blobs, trees, commits)
+
+Algorithm:
+1. Start from all branch heads (roots)
+2. Traverse commits recursively:
+   - commit → parent commit
+   - commit → tree
+   - tree → subtrees + blobs
+3. Mark all visited objects as reachable
+4. Delete all unmarked objects
+
+Data structure:
+- Use Hash Set to store visited object hashes
+
+---
+
+## Q6.2
+If garbage collection runs during a commit:
+- GC may delete an object that a commit is about to reference
+- This causes data corruption
+
+Example:
+1. Commit is writing new objects
+2. GC runs and deletes “unreachable” objects
+3. Commit tries to reference deleted object → failure
+
+Git solution:
+- Uses reference tracking and reachability
+- Uses temporary files and atomic rename
+- Avoids deleting in-use or recent objects
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
