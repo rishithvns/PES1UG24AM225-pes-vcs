@@ -10,6 +10,7 @@
 //   "100644 hello.txt\0" followed by 32 raw bytes of SHA-256
 // Load index and prepare tree
 // Handle nested directory paths using strtok
+// Recursive tree writing using tree_write_recursive
 #include "tree.h"
 #include <stdio.h>
 #include <stdlib.h>
