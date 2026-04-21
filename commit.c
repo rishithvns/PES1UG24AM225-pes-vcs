@@ -24,17 +24,28 @@
 #include <time.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <errno.h>
 
 // Forward declarations (implemented in object.c)
 int object_write(ObjectType type, const void *data, size_t len, ObjectID *id_out);
 int object_read(const ObjectID *id, ObjectType *type_out, void **data_out, size_t *len_out);
 
+static int object_id_is_zero(const ObjectID *id) {
+    ObjectID zero_id;
+    memset(&zero_id, 0, sizeof(zero_id));
+    return memcmp(id, &zero_id, sizeof(ObjectID)) == 0;
+}
+
 // ─── PROVIDED ────────────────────────────────────────────────────────────────
 
 // Parse raw commit data into a Commit struct.
 int commit_parse(const void *data, size_t len, Commit *commit_out) {
-    (void)len;
-    const char *p = (const char *)data;
+    char *buffer = malloc(len + 1);
+    if (!buffer) return -1;
+    memcpy(buffer, data, len);
+    buffer[len] = '\0';
+
+    const char *p = buffer;
     char hex[HASH_HEX_SIZE + 1];
 
     // "tree <hex>\n"
@@ -68,6 +79,7 @@ int commit_parse(const void *data, size_t len, Commit *commit_out) {
     p = strchr(p, '\n') + 1;  // skip blank line
 
     snprintf(commit_out->message, sizeof(commit_out->message), "%s", p);
+    free(buffer);
     return 0;
 }
 
@@ -106,6 +118,12 @@ int commit_walk(commit_walk_fn callback, void *ctx) {
     ObjectID id;
     if (head_read(&id) != 0) return -1;
 
+    ObjectID zero_id;
+    memset(&zero_id, 0, sizeof(zero_id));
+    if (memcmp(&id, &zero_id, sizeof(ObjectID)) == 0) {
+        return -1;
+    }
+
     while (1) {
         ObjectType type;
         void *raw;
@@ -138,7 +156,10 @@ int head_read(ObjectID *id_out) {
     if (strncmp(line, "ref: ", 5) == 0) {
         snprintf(ref_path, sizeof(ref_path), "%s/%s", PES_DIR, line + 5);
         f = fopen(ref_path, "r");
-        if (!f) return -1; // Branch exists but has no commits yet
+        if (!f) {
+            memset(id_out, 0, sizeof(*id_out));
+            return 0; // First commit on this branch
+        }
         if (!fgets(line, sizeof(line), f)) { fclose(f); return -1; }
         fclose(f);
         line[strcspn(line, "\r\n")] = '\0';
@@ -164,19 +185,61 @@ int head_update(const ObjectID *new_commit) {
 
     char tmp_path[528];
     snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", target_path);
-    
+
     f = fopen(tmp_path, "w");
     if (!f) return -1;
     
     char hex[HASH_HEX_SIZE + 1];
     hash_to_hex(new_commit, hex);
-    fprintf(f, "%s\n", hex);
-    
-    fflush(f);
-    fsync(fileno(f));
-    fclose(f);
-    
-    return rename(tmp_path, target_path);
+
+    if (fprintf(f, "%s\n", hex) < 0) {
+        fclose(f);
+        unlink(tmp_path);
+        return -1;
+    }
+
+    if (fflush(f) != 0) {
+        fclose(f);
+        unlink(tmp_path);
+        return -1;
+    }
+
+    int fd = fileno(f);
+    if (fd < 0 || fsync(fd) != 0) {
+        fclose(f);
+        unlink(tmp_path);
+        return -1;
+    }
+
+    if (fclose(f) != 0) {
+        unlink(tmp_path);
+        return -1;
+    }
+
+    if (rename(tmp_path, target_path) != 0) {
+        unlink(tmp_path);
+        return -1;
+    }
+
+    char dir_path[520];
+    snprintf(dir_path, sizeof(dir_path), "%s", target_path);
+    char *last_slash = strrchr(dir_path, '/');
+    if (last_slash) {
+        *last_slash = '\0';
+    } else {
+        snprintf(dir_path, sizeof(dir_path), ".");
+    }
+
+    fd = open(dir_path, O_RDONLY);
+    if (fd >= 0) {
+        if (fsync(fd) != 0) {
+            close(fd);
+            return -1;
+        }
+        close(fd);
+    }
+
+    return 0;
 }
 
 // ─── TODO: Implement these ───────────────────────────────────────────────────
@@ -194,8 +257,51 @@ int head_update(const ObjectID *new_commit) {
 //
 // Returns 0 on success, -1 on error.
 int commit_create(const char *message, ObjectID *commit_id_out) {
-    // TODO: Implement commit creation
-    // (See Lab Appendix for logical steps)
-    (void)message; (void)commit_id_out;
-    return -1;
+    ObjectID tree_id;
+    if (tree_from_index(&tree_id) != 0) {
+        return -1;
+    }
+
+    Commit commit;
+    memset(&commit, 0, sizeof(commit));
+    commit.tree = tree_id;
+    commit.timestamp = (uint64_t)time(NULL);
+    int author_len = snprintf(commit.author, sizeof(commit.author), "%s", pes_author());
+    int message_len = snprintf(commit.message, sizeof(commit.message), "%s", message);
+    if (author_len < 0 || author_len >= (int)sizeof(commit.author)) {
+        return -1;
+    }
+    if (message_len < 0 || message_len >= (int)sizeof(commit.message)) {
+        return -1;
+    }
+
+    ObjectID parent_id;
+    if (head_read(&parent_id) == 0) {
+        if (!object_id_is_zero(&parent_id)) {
+            commit.has_parent = 1;
+            commit.parent = parent_id;
+        } else {
+            commit.has_parent = 0;
+        }
+    } else {
+        commit.has_parent = 0;
+    }
+
+    void *data = NULL;
+    size_t len = 0;
+    if (commit_serialize(&commit, &data, &len) != 0) {
+        return -1;
+    }
+
+    int rc = object_write(OBJ_COMMIT, data, len, commit_id_out);
+    free(data);
+    if (rc != 0) {
+        return -1;
+    }
+
+    if (head_update(commit_id_out) != 0) {
+        return -1;
+    }
+
+    return 0;
 }
